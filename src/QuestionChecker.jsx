@@ -3,15 +3,14 @@ import { supabase } from './api/supabase';
 import { checkQuestionWithGemini } from './api/gemini';
 import QuestionCard from './components/QuestionCard';
 import Button from './components/Button';
-import { ArrowPathIcon } from '@heroicons/react/24/outline'; // For refresh icon
-import { ExclamationCircleIcon } from '@heroicons/react/24/solid'; // For error icon
+import { ArrowPathIcon } from '@heroicons/react/24/outline';
+import { ExclamationCircleIcon } from '@heroicons/react/24/solid';
 
 const QuestionChecker = () => {
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [checking, setChecking] = useState(false);
   const [error, setError] = useState(null);
-  const [checkedCount, setCheckedCount] = useState(0);
+  const [checkingQuestions, setCheckingQuestions] = useState(new Set());
 
   useEffect(() => {
     fetchQuestions();
@@ -23,10 +22,11 @@ const QuestionChecker = () => {
     try {
       const { data, error } = await supabase
         .from('new_questions')
-        .select('*');
+        .select('*')
+        .order('created_at', { ascending: false });
 
       if (error) throw error;
-      // Ensure options are parsed if they come as JSON strings
+      
       const parsedData = data.map(q => ({
         ...q,
         options: typeof q.options === 'string' ? JSON.parse(q.options) : q.options
@@ -40,37 +40,41 @@ const QuestionChecker = () => {
     }
   };
 
-  const handleCheckAllQuestions = async () => {
-    setChecking(true);
-    setError(null);
-    setCheckedCount(0);
-    const updatedQuestions = [...questions];
+  const handleCheckQuestion = async (questionId) => {
+    const question = questions.find(q => q.id === questionId);
+    if (!question) return;
 
-    for (let i = 0; i < updatedQuestions.length; i++) {
-      const question = updatedQuestions[i];
-      try {
-        const isWrong = await checkQuestionWithGemini(question);
-        updatedQuestions[i] = { ...question, is_wrong: isWrong, check_error: false };
+    setCheckingQuestions(prev => new Set([...prev, questionId]));
+    
+    try {
+      const isWrong = await checkQuestionWithGemini(question);
+      
+      // Update Supabase
+      const { error: updateError } = await supabase
+        .from('new_questions')
+        .update({ is_wrong: isWrong })
+        .eq('id', questionId);
 
-        // Update Supabase
-        const { error: updateError } = await supabase
-          .from('new_questions')
-          .update({ is_wrong: isWrong })
-          .eq('id', question.id); // Assuming 'id' is the primary key
+      if (updateError) throw updateError;
 
-        if (updateError) throw updateError;
+      // Update local state
+      setQuestions(prev => prev.map(q => 
+        q.id === questionId ? { ...q, is_wrong: isWrong, check_error: false } : q
+      ));
 
-        setQuestions([...updatedQuestions]); // Update state to reflect changes immediately
-        setCheckedCount(prev => prev + 1);
-      } catch (err) {
-        console.error(`Error checking question ${question.id}:`, err);
-        // Mark this specific question as having an error
-        updatedQuestions[i] = { ...question, is_wrong: true, check_error: true };
-        setQuestions([...updatedQuestions]);
-        setError(`Failed to check question "${question.question_statement.substring(0, Math.min(question.question_statement.length, 50))}...". See console for details.`);
-      }
+    } catch (err) {
+      console.error(`Error checking question ${questionId}:`, err);
+      setQuestions(prev => prev.map(q => 
+        q.id === questionId ? { ...q, is_wrong: true, check_error: true } : q
+      ));
+      setError(`Failed to check question. Please check your Gemini API key and try again.`);
+    } finally {
+      setCheckingQuestions(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(questionId);
+        return newSet;
+      });
     }
-    setChecking(false);
   };
 
   if (loading) {
@@ -82,7 +86,7 @@ const QuestionChecker = () => {
     );
   }
 
-  if (error && !checking) {
+  if (error && questions.length === 0) {
     return (
       <div className="text-error text-center p-8 mt-12 bg-surface rounded-xl mx-auto max-w-2xl shadow-lg">
         <ExclamationCircleIcon className="h-16 w-16 text-error mx-auto mb-4" />
@@ -96,15 +100,24 @@ const QuestionChecker = () => {
   return (
     <div className="container mx-auto p-4 max-w-7xl mt-8">
       <div className="flex flex-col md:flex-row justify-between items-center mb-10 gap-4 animate-fade-in-up delay-300">
-        <h2 className="text-3xl md:text-4xl font-bold text-text text-center md:text-left">Question List</h2>
+        <div>
+          <h2 className="text-3xl md:text-4xl font-bold text-text text-center md:text-left">Question Checker</h2>
+          <p className="text-textSecondary mt-2">Click "Check Question" to validate each question with Gemini AI</p>
+        </div>
         <Button
-          onClick={handleCheckAllQuestions}
-          disabled={checking || questions.length === 0}
+          onClick={fetchQuestions}
           className="px-6 py-3 text-lg"
         >
-          {checking ? `Checking... (${checkedCount}/${questions.length})` : 'Check All Questions'}
+          <ArrowPathIcon className="h-5 w-5 mr-2" />
+          Refresh Questions
         </Button>
       </div>
+
+      {error && (
+        <div className="bg-error/10 border border-error/20 rounded-xl p-4 mb-6 animate-fade-in-up">
+          <p className="text-error text-center">{error}</p>
+        </div>
+      )}
 
       {questions.length === 0 && !loading && (
         <div className="text-textSecondary text-center text-lg mt-16 p-8 bg-surface rounded-xl shadow-lg animate-fade-in-up delay-400">
@@ -117,7 +130,12 @@ const QuestionChecker = () => {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {questions.map((question) => (
-          <QuestionCard key={question.id} question={question} />
+          <QuestionCard 
+            key={question.id} 
+            question={question}
+            onCheck={() => handleCheckQuestion(question.id)}
+            isChecking={checkingQuestions.has(question.id)}
+          />
         ))}
       </div>
     </div>

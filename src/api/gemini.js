@@ -1,65 +1,87 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
-const API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const API_KEY = "AIzaSyCqs7TyrNn9RJPVXIXRl4GUgT957XOOxok";
 const genAI = new GoogleGenerativeAI(API_KEY);
-// Using gemini-2.5-flash as specified by the user.
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
 
 async function checkQuestionWithGemini(question) {
   const { question_statement, options, question_type } = question;
-  let prompt = "";
-  let aiResponse = "";
-
+  
   // Ensure options is an array for MCQ/MSQ, parsing if it's a JSON string
   const optionsArray = Array.isArray(options)
     ? options
     : (typeof options === 'string' ? JSON.parse(options) : []);
 
   try {
+    let prompt = "";
+    let result;
+
     switch (question_type) {
       case "MCQ":
       case "MSQ":
-        prompt = `Solve the following multiple-choice question and provide only the final answer. If the answer is one of the options, state the option exactly as it appears. If it's a numerical answer, state the number.
-        Question: ${question_statement}
-        Options: ${optionsArray.join(', ')}
-        
-        Your Answer:`;
-        const mcqResult = await model.generateContent(prompt);
-        aiResponse = mcqResult.response.text().trim();
-        // Check if the AI's answer is present in the options (case-insensitive)
-        const isMcqWrong = !optionsArray.some(option => aiResponse.toLowerCase().includes(option.toLowerCase()));
-        return isMcqWrong;
+        prompt = `You are an expert question validator. Analyze this multiple-choice question and determine if it's correctly formulated.
 
-      case "NAT": // Numerical Answer Type
-        prompt = `Solve the following question and provide only the final numerical answer. If the question is not numerical or cannot be solved numerically, state 'NON_NUMERICAL'.
-        Question: ${question_statement}
-        
-        Your Answer:`;
-        const natResult = await model.generateContent(prompt);
-        aiResponse = natResult.response.text().trim();
-        // Check if the AI's response is a valid number
-        const isNatWrong = isNaN(parseFloat(aiResponse));
-        return isNatWrong;
+Question: ${question_statement}
 
-      case "SUB": // Subjective
-        prompt = `Evaluate the following subjective question. Is it possible to provide a coherent proof or answer for this question? Respond with 'POSSIBLE' if a reasonable answer or proof can be constructed, and 'IMPOSSIBLE' if the question is ill-posed, ambiguous, or cannot be answered.
-        Question: ${question_statement}
+Options:
+${optionsArray.map((option, index) => `${String.fromCharCode(65 + index)}. ${option}`).join('\n')}
+
+Instructions:
+1. Solve the question step by step
+2. Determine the correct answer(s)
+3. Check if the correct answer(s) exist among the given options
+4. Respond with only "CORRECT" if the question is properly formulated and has the right answer(s) in the options
+5. Respond with only "WRONG" if the question is incorrectly formulated, unsolvable, or the correct answer is not among the options
+
+Your response:`;
         
-        Your Evaluation:`;
-        const subResult = await model.generateContent(prompt);
-        aiResponse = subResult.response.text().trim().toUpperCase();
-        // Check if the AI determined it's impossible
-        const isSubWrong = (aiResponse === 'IMPOSSIBLE');
-        return isSubWrong;
+        result = await model.generateContent(prompt);
+        const mcqResponse = result.response.text().trim().toUpperCase();
+        return mcqResponse.includes("WRONG");
+
+      case "NAT":
+        prompt = `You are an expert question validator. Analyze this numerical answer type question.
+
+Question: ${question_statement}
+
+Instructions:
+1. Solve the question step by step
+2. Determine if the question has a valid numerical answer
+3. Check if the question is properly formulated for numerical response
+4. Respond with only "CORRECT" if the question is properly formulated and has a valid numerical answer
+5. Respond with only "WRONG" if the question is incorrectly formulated, unsolvable, or doesn't have a numerical answer
+
+Your response:`;
+        
+        result = await model.generateContent(prompt);
+        const natResponse = result.response.text().trim().toUpperCase();
+        return natResponse.includes("WRONG");
+
+      case "SUB":
+        prompt = `You are an expert question validator. Analyze this subjective question.
+
+Question: ${question_statement}
+
+Instructions:
+1. Analyze if the question is clearly stated and answerable
+2. Check if a coherent proof or detailed answer can be constructed
+3. Determine if the question has sufficient information for a complete response
+4. Respond with only "CORRECT" if the question is properly formulated and answerable
+5. Respond with only "WRONG" if the question is ambiguous, ill-posed, or cannot be answered properly
+
+Your response:`;
+        
+        result = await model.generateContent(prompt);
+        const subResponse = result.response.text().trim().toUpperCase();
+        return subResponse.includes("WRONG");
 
       default:
         console.warn(`Unknown question type: ${question_type}. Marking as wrong by default.`);
-        return true; // If type is unknown, consider it wrong
+        return true;
     }
   } catch (error) {
     console.error("Error checking question with Gemini:", error);
-    // In case of API error, it's safer to mark as wrong or handle specifically
-    return true; // Mark as wrong on API error
+    throw error; // Re-throw to handle in the calling function
   }
 }
 
